@@ -43,12 +43,12 @@ Result: EIoU-SORT + TrackletRepair improved over SORT on the full SoccerNet eval
     tracking/       Tracker implementations and shared tracking components
     scripts/        Reproducible experiment scripts
     results/        Final result tables and figures
-    report/         Report-ready tables and figures
+    report/         Report tables and figures
 
 ## Main Code Files
 
-    tracking/geometry.py                  Shared IoU, EIoU, and center-distance utilities
-    tracking/common.py                    Shared TrackRow, TrackState, runner, and MOT-output helpers
+    tracking/geometry.py                  Shared geometry related utilities
+    tracking/common.py                    Shared tracking utilities
     tracking/ambiguity_gate.py            Ambiguity-gating logic
     tracking/interaction_prior.py         Local motion prior / InteractionPrior
     tracking/eiou_tracker.py              SORT and standalone EIoU-SORT
