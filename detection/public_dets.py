@@ -1,13 +1,7 @@
 """
 Public detection loader for MOT-style det/det.txt files.
 
-This is the only detection utility needed for the final project. SoccerNet-style
-tracking sequences include precomputed detections in MOT format:
-
-    frame, track_id, x, y, w, h, confidence, ...
-
-We convert xywh boxes to xyxy boxes and expose a small CachedDetections wrapper
-used by the SORT/EIoU tracking code.
+Loads precomputed detections and converts xywh boxes to xyxy boxes.
 """
 
 from __future__ import annotations
@@ -44,7 +38,6 @@ class CachedDetections:
 
 
 def load_public_detections(seq_dir: Path) -> CachedDetections:
-    """Load public MOT-format detections from one sequence directory."""
     seq_dir = Path(seq_dir)
     det_path = seq_dir / "det" / "det.txt"
 
@@ -57,8 +50,8 @@ def load_public_detections(seq_dir: Path) -> CachedDetections:
         raw = raw.reshape(1, -1)
 
     frames = raw[:, 0].astype(np.int32)
-
     xywh = raw[:, 2:6].astype(np.float32)
+
     boxes = np.column_stack(
         [
             xywh[:, 0],
@@ -80,18 +73,3 @@ def load_public_detections(seq_dir: Path) -> CachedDetections:
         frames=frames,
     )
 
-
-def load_public_detections_for_split(split_dir: Path) -> dict[str, CachedDetections]:
-    """Load public detections for every sequence in a split directory."""
-    out = {}
-
-    for seq_dir in sorted(Path(split_dir).iterdir()):
-        if not seq_dir.is_dir():
-            continue
-
-        try:
-            out[seq_dir.name] = load_public_detections(seq_dir)
-        except FileNotFoundError:
-            print(f"Skipping {seq_dir.name}: no det/det.txt")
-
-    return out

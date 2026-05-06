@@ -1,15 +1,15 @@
 """
 Dataset loaders for MOT-Challenge-format sports tracking data.
 
-Both SportsMOT and SoccerNet-Tracking ship in MOT-Challenge layout:
+Both SportsMOT and SoccerNet-Tracking are in MOT-Challenge layout:
     <root>/<split>/<sequence>/img1/000001.jpg ...
     <root>/<split>/<sequence>/gt/gt.txt
     <root>/<split>/<sequence>/seqinfo.ini
 
 gt.txt rows are: frame, track_id, x, y, w, h, conf, class, visibility
 
-We expose a uniform `Sequence` object so the rest of the pipeline does not
-care which dataset it came from.
+We create a Sequence object so the rest of the pipeline does not care 
+which dataset it came from.
 """
 from __future__ import annotations
 

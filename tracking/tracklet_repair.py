@@ -1,19 +1,19 @@
+"""
+Experiment 3: TrackletRepair / GTA-style geometry-only merger.
+
+After EIoU-SORT generates tracklets, this module reconnects compatible
+fragments using temporal gap, predicted center distance, box-size consistency,
+and greedy merging.
+"""
 
 from __future__ import annotations
 
 import copy
 import math
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Any
+from typing import Any, Dict, List
+
 import numpy as np
-
-
-def _get_attr(row: Any, name: str):
-    return getattr(row, name)
-
-
-def _set_attr(row: Any, name: str, value):
-    setattr(row, name, value)
 
 
 def _box_xyxy(row) -> np.ndarray:
@@ -21,7 +21,10 @@ def _box_xyxy(row) -> np.ndarray:
 
 
 def _center(box: np.ndarray) -> np.ndarray:
-    return np.array([(box[0] + box[2]) * 0.5, (box[1] + box[3]) * 0.5], dtype=np.float32)
+    return np.array(
+        [(box[0] + box[2]) * 0.5, (box[1] + box[3]) * 0.5],
+        dtype=np.float32,
+    )
 
 
 @dataclass
@@ -39,10 +42,13 @@ class TrackletSummary:
 
 def _group_by_track(rows: List[Any]) -> Dict[int, List[Any]]:
     out: Dict[int, List[Any]] = {}
+
     for r in rows:
         out.setdefault(r.track_id, []).append(r)
+
     for k in out:
         out[k].sort(key=lambda x: x.frame_idx)
+
     return out
 
 
@@ -83,7 +89,6 @@ def _merge_score(
     max_center_dist: float,
     size_penalty: float = 0.25,
 ) -> float:
-    # require a before b
     if a.end_frame >= b.start_frame:
         return math.inf
 
@@ -93,6 +98,7 @@ def _merge_score(
 
     pred_center = _predict_to_frame(a, b.start_frame)
     d = np.linalg.norm(pred_center - b.start_center)
+
     if d > max_center_dist:
         return math.inf
 
@@ -121,7 +127,10 @@ def merge_tracklets_greedy(
 
     for _ in range(max_iters):
         tracks = _group_by_track(rows)
-        summaries = {tid: _summarize_track(tid, trows, tail=tail) for tid, trows in tracks.items()}
+        summaries = {
+            tid: _summarize_track(tid, trows, tail=tail)
+            for tid, trows in tracks.items()
+        }
 
         best_pair = None
         best_score = math.inf
@@ -131,11 +140,17 @@ def merge_tracklets_greedy(
             for j in range(len(tids)):
                 if i == j:
                     continue
+
                 a = summaries[tids[i]]
                 b = summaries[tids[j]]
 
-                # bias toward merging short fragments, but allow any valid merge
-                score = _merge_score(a, b, max_gap=max_gap, max_center_dist=max_center_dist)
+                score = _merge_score(
+                    a,
+                    b,
+                    max_gap=max_gap,
+                    max_center_dist=max_center_dist,
+                )
+
                 if a.length < min_track_len or b.length < min_track_len:
                     score *= 0.9
 

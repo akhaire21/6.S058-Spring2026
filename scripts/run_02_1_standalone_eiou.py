@@ -1,10 +1,9 @@
 """
-Experiment 3: EIoU-SORT + TrackletRepair.
+Experiment 2.1: Standalone EIoU.
 
 Runs:
 1) SORT
-2) EIoU-SORT
-3) EIoU-SORT + TrackletRepair
+2) EIoU-SORT without ambiguity gating
 """
 
 from __future__ import annotations
@@ -19,32 +18,13 @@ sys.path.insert(0, str(ROOT))
 from scripts.common_runner import run_variants
 from tracking.common import run_tracker_on_sequence
 from tracking.eiou_tracker import EIOUSORTConfig, StandaloneEIOUSORT
-from tracking.tracklet_repair import merge_tracklets_greedy
 
 
-def make_tracker_runner(cfg: EIOUSORTConfig):
+def make_runner(cfg: EIOUSORTConfig):
     def _run(seq, dets):
         tracker = StandaloneEIOUSORT(cfg, seq.info.img_width, seq.info.img_height)
         rows = run_tracker_on_sequence(tracker, seq, dets)
         return rows, {}
-
-    return _run
-
-
-def make_repair_runner(cfg: EIOUSORTConfig):
-    def _run(seq, dets):
-        tracker = StandaloneEIOUSORT(cfg, seq.info.img_width, seq.info.img_height)
-        rows = run_tracker_on_sequence(tracker, seq, dets)
-
-        repaired = merge_tracklets_greedy(
-            rows,
-            max_gap=20,
-            max_center_dist=80.0,
-            min_track_len=3,
-            tail=5,
-        )
-
-        return repaired, {}
 
     return _run
 
@@ -65,13 +45,13 @@ def main():
         conf_threshold=0.0,
     )
 
-    sort_cfg = EIOUSORTConfig(**base, use_eiou=False, eiou_alpha=0.50)
-    eiou_cfg = EIOUSORTConfig(**base, use_eiou=True, eiou_alpha=0.50)
-
     variants = {
-        "sort": make_tracker_runner(sort_cfg),
-        "eiou_sort": make_tracker_runner(eiou_cfg),
-        "eiou_sort_tracklet_repair": make_repair_runner(eiou_cfg),
+        "sort": make_runner(
+            EIOUSORTConfig(**base, use_eiou=False, eiou_alpha=0.50)
+        ),
+        "eiou_sort": make_runner(
+            EIOUSORTConfig(**base, use_eiou=True, eiou_alpha=0.50)
+        ),
     }
 
     run_variants(args.dataset_root, args.out_root, variants, overwrite=args.overwrite)

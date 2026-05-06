@@ -1,21 +1,33 @@
+"""
+Experiment 1: Ambiguity-Aware SORT.
+
+This tracker builds a normal SORT-style cost matrix. Rows that cross an
+ambiguity threshold receive richer cues:
+1) Expanded IoU
+2) InteractionPrior based on nearby-track velocity consistency
+
+Experiment 2.2 uses this tracker with use_ambiguity_gate=False and
+use_relation_prior=True to test InteractionPrior as a standalone cue.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import List, Tuple, Dict, Any
+from typing import Any, Dict, List, Tuple
+
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-
-@dataclass
-class TrackRow:
-    frame_idx: int
-    track_id: int
-    x1: float
-    y1: float
-    x2: float
-    y2: float
-    score: float = 1.0
+from tracking.ambiguity_gate import compute_ambiguity_flags
+from tracking.common import (
+    TrackRow,
+    TrackState,
+    run_tracker_on_sequence,
+    save_mot_txt,
+    summarize_rows,
+)
+from tracking.geometry import pairwise_center_distance, pairwise_overlap
+from tracking.interaction_prior import relation_cost_row
 
 
 @dataclass
@@ -36,146 +48,21 @@ class AAEIOUSORTConfig:
     use_eiou_on_ambiguous: bool = True
     use_relation_prior: bool = True
 
-    # Ambiguity triggers
+    # Ambiguity thresholds
     ambiguity_weak_cost: float = 0.55
     ambiguity_margin: float = 0.08
     ambiguity_radius: float = 70.0
     ambiguity_min_neighbors: int = 2
 
-    # Ambiguity-conditioned cues
+    # Richer cues
     eiou_alpha: float = 0.50
     lambda_eiou: float = 0.35
     lambda_rel: float = 0.25
 
-    # Local interaction-aware prior
+    # InteractionPrior
     rel_k: int = 3
     rel_radius: float = 120.0
     rel_norm_px: float = 80.0
-
-
-def _area_xyxy(box: np.ndarray) -> float:
-    w = max(0.0, float(box[2] - box[0]))
-    h = max(0.0, float(box[3] - box[1]))
-    return w * h
-
-
-def iou_xyxy(a: np.ndarray, b: np.ndarray) -> float:
-    x1 = max(float(a[0]), float(b[0]))
-    y1 = max(float(a[1]), float(b[1]))
-    x2 = min(float(a[2]), float(b[2]))
-    y2 = min(float(a[3]), float(b[3]))
-
-    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-    if inter <= 0:
-        return 0.0
-
-    union = _area_xyxy(a) + _area_xyxy(b) - inter + 1e-9
-    return inter / union
-
-
-def expand_box_xyxy(box: np.ndarray, alpha: float) -> np.ndarray:
-    x1, y1, x2, y2 = map(float, box)
-    cx = 0.5 * (x1 + x2)
-    cy = 0.5 * (y1 + y2)
-    w = max(1e-6, x2 - x1)
-    h = max(1e-6, y2 - y1)
-
-    new_w = w * (1.0 + alpha)
-    new_h = h * (1.0 + alpha)
-
-    return np.array(
-        [cx - 0.5 * new_w, cy - 0.5 * new_h, cx + 0.5 * new_w, cy + 0.5 * new_h],
-        dtype=np.float32,
-    )
-
-
-def expansion_iou(a: np.ndarray, b: np.ndarray, alpha: float = 0.5) -> float:
-    return iou_xyxy(expand_box_xyxy(a, alpha), expand_box_xyxy(b, alpha))
-
-
-def centers_xyxy(boxes: np.ndarray) -> np.ndarray:
-    if len(boxes) == 0:
-        return np.empty((0, 2), dtype=np.float32)
-    cx = 0.5 * (boxes[:, 0] + boxes[:, 2])
-    cy = 0.5 * (boxes[:, 1] + boxes[:, 3])
-    return np.stack([cx, cy], axis=1).astype(np.float32)
-
-
-def pairwise_center_distance(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
-    if len(boxes_a) == 0 or len(boxes_b) == 0:
-        return np.zeros((len(boxes_a), len(boxes_b)), dtype=np.float32)
-    ca = centers_xyxy(boxes_a)
-    cb = centers_xyxy(boxes_b)
-    diff = ca[:, None, :] - cb[None, :, :]
-    return np.linalg.norm(diff, axis=-1).astype(np.float32)
-
-
-def pairwise_overlap(
-    boxes_a: np.ndarray,
-    boxes_b: np.ndarray,
-    use_eiou: bool,
-    eiou_alpha: float,
-) -> np.ndarray:
-    n, m = len(boxes_a), len(boxes_b)
-    out = np.zeros((n, m), dtype=np.float32)
-
-    if n == 0 or m == 0:
-        return out
-
-    for i in range(n):
-        for j in range(m):
-            if use_eiou:
-                out[i, j] = expansion_iou(boxes_a[i], boxes_b[j], alpha=eiou_alpha)
-            else:
-                out[i, j] = iou_xyxy(boxes_a[i], boxes_b[j])
-
-    return out
-
-
-class _Track:
-    def __init__(self, track_id: int, init_box: np.ndarray, score: float, cfg: AAEIOUSORTConfig):
-        self.id = int(track_id)
-        self.box = init_box.astype(np.float32).copy()
-        self.score = float(score)
-        self.cfg = cfg
-
-        self.vel = np.zeros(2, dtype=np.float32)
-        self.last_obs_center = self.center().copy()
-
-        self.hits = 1
-        self.age = 1
-        self.time_since_update = 0
-        self.confirmed = cfg.min_hits <= 1
-
-    def center(self) -> np.ndarray:
-        return np.array(
-            [(self.box[0] + self.box[2]) * 0.5, (self.box[1] + self.box[3]) * 0.5],
-            dtype=np.float32,
-        )
-
-    def predict(self):
-        self.box[[0, 2]] += self.vel[0]
-        self.box[[1, 3]] += self.vel[1]
-        self.age += 1
-        self.time_since_update += 1
-
-    def update(self, det_box: np.ndarray, det_score: float):
-        det_center = np.array(
-            [(det_box[0] + det_box[2]) * 0.5, (det_box[1] + det_box[3]) * 0.5],
-            dtype=np.float32,
-        )
-
-        inst_vel = det_center - self.last_obs_center
-        self.vel = self.cfg.vel_beta * self.vel + (1.0 - self.cfg.vel_beta) * inst_vel
-
-        self.box = det_box.astype(np.float32).copy()
-        self.score = float(det_score)
-        self.last_obs_center = det_center
-        self.time_since_update = 0
-        self.hits += 1
-
-        if self.hits >= self.cfg.min_hits:
-            self.confirmed = True
 
 
 class AmbiguityAwareEIOUSORT:
@@ -184,7 +71,8 @@ class AmbiguityAwareEIOUSORT:
         self.img_w = int(img_w)
         self.img_h = int(img_h)
         self.img_diag = max(1.0, float((img_w ** 2 + img_h ** 2) ** 0.5))
-        self.tracks: List[_Track] = []
+
+        self.tracks: List[TrackState] = []
         self.next_id = 1
 
         self.debug = {
@@ -210,7 +98,7 @@ class AmbiguityAwareEIOUSORT:
         return out
 
     def _spawn(self, det_box: np.ndarray, det_score: float):
-        self.tracks.append(_Track(self.next_id, det_box, det_score, self.cfg))
+        self.tracks.append(TrackState(self.next_id, det_box, det_score, self.cfg))
         self.next_id += 1
 
     def _build_base_cost(self, pred_boxes: np.ndarray, det_boxes: np.ndarray) -> np.ndarray:
@@ -220,88 +108,10 @@ class AmbiguityAwareEIOUSORT:
             use_eiou=self.cfg.always_eiou,
             eiou_alpha=self.cfg.eiou_alpha,
         )
+
         center_dist = pairwise_center_distance(pred_boxes, det_boxes) / self.img_diag
         cost = self.cfg.alpha * (1.0 - overlap) + self.cfg.beta * center_dist
         return cost.astype(np.float32)
-
-    def _ambiguity_flags(
-        self,
-        base_cost: np.ndarray,
-        pred_boxes: np.ndarray,
-        det_boxes: np.ndarray,
-    ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
-        n, m = base_cost.shape
-        ambiguous = np.zeros((n,), dtype=bool)
-        weak = np.zeros((n,), dtype=bool)
-        margin = np.zeros((n,), dtype=bool)
-        crowded = np.zeros((n,), dtype=bool)
-
-        if n == 0 or m == 0:
-            return ambiguous, {"weak": weak, "margin": margin, "crowded": crowded}
-
-        det_centers = centers_xyxy(det_boxes)
-        pred_centers = centers_xyxy(pred_boxes)
-
-        for i in range(n):
-            row = np.asarray(base_cost[i], dtype=np.float32)
-            finite = row[np.isfinite(row)]
-            if len(finite) == 0:
-                continue
-
-            sorted_costs = np.sort(finite)
-            best = float(sorted_costs[0])
-            second = float(sorted_costs[1]) if len(sorted_costs) >= 2 else float("inf")
-
-            weak[i] = best > float(self.cfg.ambiguity_weak_cost)
-            margin[i] = (second - best) < float(self.cfg.ambiguity_margin)
-
-            dists = np.linalg.norm(det_centers - pred_centers[i], axis=1)
-            crowded[i] = int(np.sum(dists <= float(self.cfg.ambiguity_radius))) >= int(self.cfg.ambiguity_min_neighbors)
-
-            ambiguous[i] = weak[i] or margin[i] or crowded[i]
-
-        return ambiguous, {"weak": weak, "margin": margin, "crowded": crowded}
-
-    def _neighbor_mean_velocity(self, track_idx: int) -> Tuple[np.ndarray, bool]:
-        if len(self.tracks) <= 1:
-            return np.zeros(2, dtype=np.float32), False
-
-        ci = self.tracks[track_idx].center()
-        candidates = []
-
-        for q, t in enumerate(self.tracks):
-            if q == track_idx:
-                continue
-            if t.time_since_update > self.cfg.max_age:
-                continue
-
-            d = float(np.linalg.norm(t.center() - ci))
-            if d <= float(self.cfg.rel_radius):
-                candidates.append((d, q))
-
-        if not candidates:
-            return np.zeros(2, dtype=np.float32), False
-
-        candidates.sort(key=lambda x: x[0])
-        keep = [q for _, q in candidates[: int(self.cfg.rel_k)]]
-
-        if len(keep) == 0:
-            return np.zeros(2, dtype=np.float32), False
-
-        mean_vel = np.mean([self.tracks[q].vel for q in keep], axis=0).astype(np.float32)
-        return mean_vel, True
-
-    def _relation_cost_row(self, track_idx: int, det_boxes: np.ndarray) -> Tuple[np.ndarray, bool]:
-        mean_vel, has_neighbors = self._neighbor_mean_velocity(track_idx)
-        if not has_neighbors or len(det_boxes) == 0:
-            return np.zeros((len(det_boxes),), dtype=np.float32), False
-
-        det_centers = centers_xyxy(det_boxes)
-        last = self.tracks[track_idx].last_obs_center.astype(np.float32)
-        implied_vel = det_centers - last[None, :]
-        rel = np.linalg.norm(implied_vel - mean_vel[None, :], axis=1)
-        rel = rel / max(1.0, float(self.cfg.rel_norm_px))
-        return rel.astype(np.float32), True
 
     def _build_final_cost(
         self,
@@ -314,7 +124,15 @@ class AmbiguityAwareEIOUSORT:
         if n == 0 or m == 0:
             return base_cost, np.zeros((n,), dtype=bool)
 
-        ambiguous, reasons = self._ambiguity_flags(base_cost, pred_boxes, det_boxes)
+        ambiguous, reasons = compute_ambiguity_flags(
+            base_cost=base_cost,
+            pred_boxes=pred_boxes,
+            det_boxes=det_boxes,
+            weak_cost=self.cfg.ambiguity_weak_cost,
+            margin_thresh=self.cfg.ambiguity_margin,
+            crowd_radius=self.cfg.ambiguity_radius,
+            min_neighbors=self.cfg.ambiguity_min_neighbors,
+        )
 
         self.debug["total_rows"] += int(n)
         self.debug["ambiguous_rows"] += int(np.sum(ambiguous))
@@ -343,7 +161,17 @@ class AmbiguityAwareEIOUSORT:
             for i in range(n):
                 if not active_rows[i]:
                     continue
-                rel_row, used = self._relation_cost_row(i, det_boxes)
+
+                rel_row, used = relation_cost_row(
+                    tracks=self.tracks,
+                    track_idx=i,
+                    det_boxes=det_boxes,
+                    max_age=self.cfg.max_age,
+                    rel_k=self.cfg.rel_k,
+                    rel_radius=self.cfg.rel_radius,
+                    rel_norm_px=self.cfg.rel_norm_px,
+                )
+
                 if used:
                     final_cost[i, :] += float(self.cfg.lambda_rel) * rel_row
                     self.debug["relation_rows"] += 1
@@ -375,7 +203,6 @@ class AmbiguityAwareEIOUSORT:
         )
 
         matches: List[Tuple[int, int]] = []
-        unmatched_tracks = set(range(len(self.tracks)))
         unmatched_dets = set(range(len(det_xyxy)))
         ambiguous = np.zeros((len(self.tracks),), dtype=bool)
 
@@ -386,7 +213,6 @@ class AmbiguityAwareEIOUSORT:
             for r, c in zip(row_ind.tolist(), col_ind.tolist()):
                 if cost[r, c] <= float(self.cfg.max_match_cost):
                     matches.append((r, c))
-                    unmatched_tracks.discard(r)
                     unmatched_dets.discard(c)
 
                     self.debug["matches"] += 1
@@ -401,11 +227,7 @@ class AmbiguityAwareEIOUSORT:
         for di in sorted(unmatched_dets):
             self._spawn(det_xyxy[di], det_scores[di])
 
-        survivors = []
-        for t in self.tracks:
-            if t.time_since_update <= int(self.cfg.max_age):
-                survivors.append(t)
-        self.tracks = survivors
+        self.tracks = [t for t in self.tracks if t.time_since_update <= int(self.cfg.max_age)]
 
         rows: List[TrackRow] = []
         for t in self.tracks:
@@ -426,57 +248,3 @@ class AmbiguityAwareEIOUSORT:
             )
 
         return rows
-
-
-def _extract_det_arrays(det_obj, frame_idx: int):
-    frames = np.asarray(det_obj.frames)
-    boxes = np.asarray(det_obj.boxes)
-    mask = frames == frame_idx
-
-    frame_boxes = boxes[mask].astype(np.float32)
-    scores = getattr(det_obj, "scores", None)
-
-    if scores is None:
-        frame_scores = np.ones((len(frame_boxes),), dtype=np.float32)
-    else:
-        frame_scores = np.asarray(scores)[mask].astype(np.float32)
-
-    return frame_boxes, frame_scores
-
-
-def run_tracker_on_sequence(tracker: AmbiguityAwareEIOUSORT, sequence, detections):
-    rows: List[TrackRow] = []
-    seq_len = int(sequence.info.seq_length)
-
-    for frame_idx in range(1, seq_len + 1):
-        det_boxes, det_scores = _extract_det_arrays(detections, frame_idx)
-        rows.extend(tracker.step(frame_idx, det_boxes, det_scores))
-
-    return rows
-
-
-def save_mot_txt(rows: List[TrackRow], out_path):
-    from pathlib import Path
-
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(out_path, "w") as f:
-        for r in rows:
-            w = r.x2 - r.x1
-            h = r.y2 - r.y1
-            f.write(
-                f"{r.frame_idx},{r.track_id},{r.x1:.2f},{r.y1:.2f},{w:.2f},{h:.2f},{r.score:.4f},-1,-1,-1\n"
-            )
-
-
-def summarize_rows(rows: List[TrackRow], short_len: int = 20):
-    from collections import Counter
-
-    counts = Counter(r.track_id for r in rows)
-    return {
-        "rows": len(rows),
-        "unique_ids": len(counts),
-        "short_tracks": sum(1 for v in counts.values() if v < short_len),
-        "mean_track_len": (sum(counts.values()) / max(len(counts), 1)),
-    }

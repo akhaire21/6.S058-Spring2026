@@ -35,21 +35,31 @@ Based on the cue analysis, we kept the useful cue and removed the harmful one. T
 
 Result: EIoU-SORT + TrackletRepair improved over SORT on the full SoccerNet evaluation.
 
-## Repository layout
 
-    configs/        Configuration files
-    data_io/        Minimal dataset-loading utilities
+## Repository Layout
+
+    data_io/        Dataset-loading utilities
     detection/      Public detection-loading utilities
-    tracking/       Tracker implementations
+    tracking/       Tracker implementations and shared tracking components
     scripts/        Reproducible experiment scripts
     results/        Final result tables and figures
     report/         Report-ready tables and figures
 
-## Main code files
+## Main Code Files
 
-    tracking/eiou_tracker.py
-    tracking/ambiguity_aware_tracker.py
-    tracking/tracklet_repair.py
+    tracking/geometry.py                  Shared IoU, EIoU, and center-distance utilities
+    tracking/common.py                    Shared TrackRow, TrackState, runner, and MOT-output helpers
+    tracking/ambiguity_gate.py            Ambiguity-gating logic
+    tracking/interaction_prior.py         Local motion prior / InteractionPrior
+    tracking/eiou_tracker.py              SORT and standalone EIoU-SORT
+    tracking/ambiguity_aware_tracker.py   Ambiguity-aware tracker
+    tracking/tracklet_repair.py           Geometry-only TrackletRepair
+
+## Experiment Scripts
+
+    scripts/run_01_ambiguity_gating.py
+    scripts/run_02_1_standalone_eiou.py
+    scripts/run_02_2_standalone_interaction_prior.py
     scripts/run_03_eiou_tracklet_repair.py
 
 ## Dataset
@@ -60,10 +70,13 @@ Expected dataset layout:
 
     data/soccernet-tracking/tracking/test/
       SNMOT-116/
+        det/det.txt
         gt/gt.txt
         seqinfo.ini
 
-## Example run
+## Example Run
+
+Run the final EIoU + TrackletRepair experiment:
 
     python scripts/run_03_eiou_tracklet_repair.py \
       --dataset-root /path/to/soccernet-tracking/tracking/test \
