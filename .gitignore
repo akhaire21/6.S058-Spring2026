@@ -1,0 +1,82 @@
+# -------------------------
+# Python / notebooks
+# -------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# -------------------------
+# Environments
+# -------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# -------------------------
+# OS / editor files
+# -------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# -------------------------
+# Raw datasets: do not commit SoccerNet or videos
+# -------------------------
+data/
+datasets/
+soccernet-tracking/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# -------------------------
+# External tools
+# -------------------------
+TrackEval/
+external/TrackEval/
+
+# -------------------------
+# Large generated experiment outputs
+# Keep final report tables/figures, but ignore raw tracker dumps.
+# -------------------------
+results/runs/
+results/**/data/
+results/**/trackeval/
+results/**/*.txt
+
+# -------------------------
+# Allow final report artifacts
+# -------------------------
+!results/tables/
+!results/tables/*.csv
+!results/tables/*.json
+
+!results/figures/
+!results/figures/*.png
+!results/figures/*.pdf
+
+!report/tables/
+!report/tables/*.csv
+!report/tables/*.json
+
+!report/figures/
+!report/figures/*.png
+!report/figures/*.pdf
+
+# -------------------------
+# Logs / temporary files
+# -------------------------
+*.log
+tmp/
+temp/
