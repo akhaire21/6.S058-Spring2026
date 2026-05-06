@@ -4,4 +4,3 @@ pandas
 matplotlib
 pyyaml
 tqdm
-opencv-python
